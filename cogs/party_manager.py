@@ -1291,7 +1291,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 print(
                     f"BŁĄD REPLY: Nie udało się wysłać ponownego przypomnienia dla party {party_id_being_processed}: {e}")
             # Nie usuwamy wiadomości użytkownika, jeśli odpowiedź była niepoprawna,
-            # chyba że chcemy ją usunąć zawsze - wtedy user_reply_msg powinno być message
+            # chyba że chcemy ją usunąe zawsze - wtedy user_reply_msg powinno być message
             user_reply_msg = message  # Ustawiamy do usunięcia także niepoprawną odpowiedź użytkownika
 
         # Sprzątanie wiadomości DM (odpowiedzi użytkownika i odpowiedzi bota, jeśli istnieje)
