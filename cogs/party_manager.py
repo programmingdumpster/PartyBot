@@ -1197,7 +1197,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                     f"BŁĄD REPLY: Nie udało się wysłać ponownego przypomnienia dla party {party_id_being_processed}: {e}")
             user_reply_msg = message
         await self._cleanup_dm_messages(None, bot_message=bot_response_after_reply_msg, user_message=user_reply_msg)
-
+#e
 
 def setup(bot: commands.Bot):
     cog_instance = PartyManagementCog(bot)
