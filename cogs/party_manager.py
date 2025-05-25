@@ -138,7 +138,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
         szukam_ch = disnake.utils.get(guild.text_channels, name=config.SZUKAM_PARTY_CHANNEL_NAME)
         if not szukam_ch:
             await dm_ch.send(
-                f"Krytyczny błąd: Kanał `#{config.SZUKAM_PARTY_CHANNEL_NAME}` nie został znaleziony na serwerze '{guild.name}'.")
+                f"Krytyczny błąd: Kanał `#{config.SZUKAM_PARTY_CHANNEL_NAME}` (do ogłoszeń party) nie został znaleziony na serwerze '{guild.name}'.")
             return
 
         cat_name = f"🎉 {party_name_input} ({leader.display_name})"
@@ -257,38 +257,40 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             pass
         await self.send_leader_control_panel(leader, party_id)
 
+    # --- NOWA KOMENDA SLASH ---
     @commands.slash_command(
-        name="setup_party_creation",
-        description="Wysyła wiadomość z przyciskiem do tworzenia party na kanale 'stworz-party'."
+        name="setuppartyembed",
+        description="Wysyła embed z przyciskiem 'Stwórz Party'."
     )
     @commands.has_permissions(administrator=True)
-    async def setup_party_creation_command(self, inter: disnake.ApplicationCommandInteraction):
-        print(f"[{datetime.datetime.now()}] DEBUG: Wywołano setup_party_creation_command przez {inter.user}")
+    async def setup_party_embed_slash_command(self, inter: disnake.ApplicationCommandInteraction):
+        """Wysyła wiadomość z przyciskiem do tworzenia party na kanał 'stworz-party'."""
+        print(f"[{datetime.datetime.now()}] DEBUG: Wywołano /setuppartyembed przez {inter.user}")
         try:
             await inter.response.defer(ephemeral=True)
-            print(
-                f"[{datetime.datetime.now()}] DEBUG: Interakcja setup_party_creation_command ODROCZONA dla {inter.user}")
         except Exception as e_defer:
             print(
-                f"[{datetime.datetime.now()}] KRYTYCZNY BŁĄD: Nie udało się odroczyć interakcji w setup_party_creation_command: {e_defer}")
+                f"[{datetime.datetime.now()}] KRYTYCZNY BŁĄD: Nie udało się odroczyć interakcji w /setuppartyembed: {e_defer}")
             return
 
         target_channel_name = config.STWORZ_PARTY_CHANNEL_NAME
 
         if not target_channel_name or not isinstance(target_channel_name, str):
-            print(
-                f"BŁĄD KRYTYCZNY: config.STWORZ_PARTY_CHANNEL_NAME nie jest poprawnie zdefiniowana! Wartość: {target_channel_name}")
             await inter.followup.send(
-                "Błąd konfiguracji: Nazwa kanału 'stworz-party' nie jest ustawiona.",
+                "Błąd konfiguracji: Nazwa kanału 'stworz-party' (`STWORZ_PARTY_CHANNEL_NAME`) nie jest poprawnie ustawiona w pliku `config.py`.",
                 ephemeral=True
             )
             return
 
-        stworz_party_channel = disnake.utils.get(inter.guild.text_channels, name=target_channel_name)
+        if not inter.guild:
+            await inter.followup.send("Tej komendy można użyć tylko na serwerze.", ephemeral=True)
+            return
 
-        if not stworz_party_channel:
+        target_channel = disnake.utils.get(inter.guild.text_channels, name=target_channel_name)
+
+        if not target_channel:
             await inter.followup.send(
-                f"Nie znaleziono kanału `#{target_channel_name}`. Utwórz go najpierw.",
+                f"Nie znaleziono kanału `#{target_channel_name}` na tym serwerze. Utwórz go najpierw lub sprawdź konfigurację.",
                 ephemeral=True
             )
             return
@@ -310,46 +312,49 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
         ))
 
         try:
-            await stworz_party_channel.send(embed=embed, view=view)
+            await target_channel.send(embed=embed, view=view)
             await inter.followup.send(
-                f"Wiadomość z przyciskiem do tworzenia party została wysłana na {stworz_party_channel.mention}.",
+                f"Wiadomość z przyciskiem do tworzenia party została wysłana na {target_channel.mention}.",
                 ephemeral=True
             )
         except disnake.Forbidden:
-            print(
-                f"BŁĄD: Brak uprawnień do wysłania wiadomości na kanale {stworz_party_channel.mention} (serwer: {inter.guild.name if inter.guild else 'Nieznany'})")
             await inter.followup.send(
-                f"Nie mam uprawnień do wysłania wiadomości na kanale {stworz_party_channel.mention}.",
+                f"Nie mam uprawnień do wysłania wiadomości na kanale {target_channel.mention}.",
                 ephemeral=True
             )
         except Exception as e:
-            print(f"Error sending party creation setup message: {e} (Typ: {type(e)})")
+            print(
+                f"Błąd podczas wysyłania wiadomości setup party embed (slash cmd /setuppartyembed): {e} (Typ: {type(e)})")
             await inter.followup.send(f"Wystąpił nieoczekiwany błąd podczas wysyłania wiadomości: {type(e).__name__}",
                                       ephemeral=True)
 
-    @setup_party_creation_command.error
-    async def setup_party_creation_command_error(self, inter: disnake.ApplicationCommandInteraction,
-                                                 error: commands.CommandError):
-        print(f"Error handler dla setup_party_creation_command przechwycił błąd: {error} (Typ: {type(error)})")
-
+    @setup_party_embed_slash_command.error
+    async def setup_party_embed_slash_command_error(self, inter: disnake.ApplicationCommandInteraction,
+                                                    error: commands.CommandError):
+        print(f"Error handler dla /setuppartyembed przechwycił błąd: {error} (Typ: {type(error)})")
         if not inter.response.is_done():
             try:
                 if isinstance(error, commands.MissingPermissions):
                     await inter.response.send_message("Nie masz uprawnień do użycia tej komendy.", ephemeral=True)
                 else:
                     await inter.response.send_message(
-                        f"Wystąpił błąd przed przetworzeniem komendy: {type(error).__name__}.", ephemeral=True)
+                        f"Wystąpił błąd przed przetworzeniem komendy /setuppartyembed: {type(error).__name__}.",
+                        ephemeral=True)
             except Exception as e_resp:
-                print(f"Nie udało się wysłać response w error handlerze (is_done() było FALSE): {e_resp}")
+                print(
+                    f"Nie udało się wysłać response w error handlerze dla /setuppartyembed (is_done() było FALSE): {e_resp}")
         else:
             try:
                 if isinstance(error, commands.MissingPermissions):
                     await inter.followup.send("Nie masz uprawnień do użycia tej komendy.", ephemeral=True)
                 else:
                     await inter.followup.send(
-                        f"Wystąpił błąd po rozpoczęciu przetwarzania komendy: {type(error).__name__}.", ephemeral=True)
+                        f"Wystąpił błąd po rozpoczęciu przetwarzania komendy /setuppartyembed: {type(error).__name__}.",
+                        ephemeral=True)
             except Exception as e_followup:
-                print(f"Nie udało się wysłać followup w error handlerze: {e_followup}")
+                print(f"Nie udało się wysłać followup w error handlerze dla /setuppartyembed: {e_followup}")
+
+    # --- KONIEC NOWEJ KOMENDY SLASH ---
 
     async def _update_settings_embed(self, party_id: int):
         party_data = active_parties.get(party_id)
