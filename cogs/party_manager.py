@@ -4,10 +4,9 @@ import disnake
 from disnake.ext import commands, tasks
 import asyncio
 import datetime
-# import uuid # Ten import wydaje się nieużywany w tym pliku - USUNIĘTO
+# import uuid  # Ten import wydaje się nieużywany w tym pliku # USUNIĘTO
 import json
 import os
-from typing import Union, Optional  # DODANO
 
 # Importy z tego samego pakietu (cogs) i katalogu nadrzędnego (dla config)
 import config  # Zakłada, że config.py jest w Party_bot/
@@ -72,7 +71,6 @@ def load_party_data():
         try:
             with open(config.PARTY_DATA_FILE, 'r') as f:
                 loaded_data = json.load(f)
-                # Poprawka: Klucze w JSON są stringami, trzeba je przekonwertować na int
                 active_parties = {int(k): v for k, v in loaded_data.items()}
                 print(f"INFO: Dane party załadowane z {config.PARTY_DATA_FILE}. Liczba party: {len(active_parties)}")
                 for party_id, party_data_instance in list(active_parties.items()):
@@ -113,110 +111,50 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
         save_party_data()
         print("Cog 'Zarządzanie Party' został odładowany, dane zapisane.")
 
-    @commands.slash_command(
-        name="setup_party_channel",
-        description="Wysyła wiadomość z przyciskiem do tworzenia party na kanale #stworz-party."
-    )
-    @commands.has_permissions(administrator=True)
-    async def setup_party_channel_command(self, inter: disnake.ApplicationCommandInteraction):
-        target_channel_name = config.STWORZ_PARTY_CHANNEL_NAME
-        stworz_party_channel = disnake.utils.get(inter.guild.text_channels, name=target_channel_name)
-
-        if not stworz_party_channel:
-            await inter.response.send_message(
-                f"Nie znaleziono kanału `#{target_channel_name}`. Utwórz go najpierw.",
-                ephemeral=True
-            )
-            return
-
-        embed = disnake.Embed(
-            title="🎉 Stwórz Nowe Party!",
-            description=(
-                "Kliknij poniższy przycisk, aby rozpocząć proces tworzenia party.\n"
-                "Zostaniesz poprowadzony przez kolejne kroki w wiadomościach prywatnych (DM)."
-            ),
-            color=disnake.Color.green()  # Kolor zielony jak w przykładzie
-        )
-        # Możesz ustawić miniaturkę, jeśli chcesz, np. avatar bota
-        # embed.set_thumbnail(url=self.bot.user.display_avatar.url)
-
-        view = disnake.ui.View(timeout=None)
-        view.add_item(disnake.ui.Button(
-            label="Stwórz Party",
-            style=disnake.ButtonStyle.success,  # Styl zielony
-            custom_id="global_create_new_party_button",  # Unikalne ID dla tego przycisku
-            emoji="🎉"  # Emoji z przykładu
-        ))
-        try:
-            await stworz_party_channel.send(embed=embed, view=view)
-            await inter.response.send_message(
-                f"Wiadomość z przyciskiem do tworzenia party została wysłana na {stworz_party_channel.mention}.",
-                ephemeral=True
-            )
-        except disnake.Forbidden:
-            await inter.response.send_message(
-                f"Nie mam uprawnień do wysłania wiadomości na {stworz_party_channel.mention}.",
-                ephemeral=True
-            )
-        except disnake.HTTPException as e:
-            await inter.response.send_message(
-                f"Nie udało się wysłać wiadomości: {e}",
-                ephemeral=True
-            )
-
-    @setup_party_channel_command.error
-    async def setup_party_channel_error(self, inter: disnake.ApplicationCommandInteraction,
-                                        error: commands.CommandError):
-        if isinstance(error, commands.MissingPermissions):
-            await inter.response.send_message("Nie masz uprawnień do użycia tej komendy.", ephemeral=True)
-        else:
-            await inter.response.send_message(f"Wystąpił błąd: {error}", ephemeral=True)
-            print(f"Error in setup_party_channel_command: {error}")
-
-    async def _initiate_party_creation_flow(self, interaction: disnake.Interaction):
+    # NOWA METODA DO OBSŁUGI LOGIKI TWORZENIA PARTY Z INTERAKCJI (PRZYCISKU)
+    async def _start_party_creation_from_interaction(self, interaction: disnake.MessageInteraction):
         author = interaction.user
         guild = interaction.guild
 
+        # Sprawdzenie, czy użytkownik jest już liderem party
         is_already_leader = any(p_data.get("leader_id") == author.id for p_data in active_parties.values())
         if is_already_leader:
             leader_of_party_name = next((p_data.get("party_name", "...") for p_data in active_parties.values() if
                                          p_data.get("leader_id") == author.id), "nieznanego party")
             msg = f"{author.mention}, jesteś już liderem party '{leader_of_party_name}'. Możesz prowadzić tylko jedno party."
-            try:  # Używamy followup, bo interakcja była już deferred
-                await interaction.followup.send(msg, ephemeral=True)
-            except disnake.HTTPException:  # Gdyby followup.send zawiodło (rzadkie)
-                pass  # Trudno, użytkownik i tak jest już poinformowany przez defer
+            await interaction.followup.send(msg, ephemeral=True)
             return
 
+        # Tworzenie kanału DM
         try:
             dm_ch = await author.create_dm()
         except disnake.Forbidden:
-            try:
-                await interaction.followup.send(
-                    f"{author.mention}, nie mogę Ci wysłać DM. Sprawdź ustawienia prywatności.", ephemeral=True)
-            except disnake.HTTPException:
-                pass
+            await interaction.followup.send(f"{author.mention}, nie mogę Ci wysłać DM. Sprawdź ustawienia prywatności.",
+                                            ephemeral=True)
             return
 
-        try:  # Informacja zwrotna dla użytkownika po kliknięciu przycisku
-            await interaction.followup.send(
-                "Rozpoczynam tworzenie party w Twoich wiadomościach prywatnych (DM)... Sprawdź DM!", ephemeral=True)
-        except disnake.HTTPException:
-            pass  # Jeśli followup już był użyty lub wystąpił inny błąd, kontynuuj do DM
+        # Informacja dla użytkownika o rozpoczęciu procesu w DM
+        # interaction.followup.send jest używane, ponieważ interaction.response.defer() zostało już wywołane
+        await interaction.followup.send(
+            "Rozpoczynam proces tworzenia party w Twoich wiadomościach prywatnych (DM)... Sprawdź DM!", ephemeral=True)
 
+        # Logika wyboru gry i nazwy party w DM (z party_creation_flow)
         selected_game = await party_creation_flow.handle_game_selection_dm(self.bot, author, dm_ch)
         if not selected_game: return
 
         party_name_input = await party_creation_flow.handle_party_name_dm(self.bot, author, dm_ch)
         if not party_name_input: return
 
+        leader = author  # dla spójności z resztą kodu, który był kopiowany
+
+        # Reszta logiki tworzenia party, skopiowana z party_command_handler i dostosowana
         szukam_ch = disnake.utils.get(guild.text_channels, name=config.SZUKAM_PARTY_CHANNEL_NAME)
         if not szukam_ch:
             await dm_ch.send(
                 f"Krytyczny błąd: Kanał `#{config.SZUKAM_PARTY_CHANNEL_NAME}` nie został znaleziony na serwerze '{guild.name}'.")
             return
 
-        cat_name = f"🎉 {party_name_input} ({author.display_name})"
+        cat_name = f"🎉 {party_name_input} ({leader.display_name})"
         category_overwrites = {
             guild.default_role: disnake.PermissionOverwrite(
                 view_channel=True, read_messages=True, send_messages=False, connect=False, speak=False,
@@ -228,7 +166,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 connect=True, speak=True, create_public_threads=True, create_private_threads=True,
                 send_messages_in_threads=True, manage_threads=True
             ),
-            author: disnake.PermissionOverwrite(
+            leader: disnake.PermissionOverwrite(
                 view_channel=True, read_messages=True, send_messages=True, connect=True, speak=True,
                 manage_messages=True,
                 mute_members=True, deafen_members=True, move_members=True, create_public_threads=True,
@@ -254,7 +192,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             text_ch_name = f"💬︱{party_name_input[:20]}"
             text_ch = await category.create_text_channel(name=text_ch_name)
             await text_ch.send(
-                f"Witaj w party **{party_name_input}**! Lider: {author.mention}. Gra: **{selected_game}**.")
+                f"Witaj w party **{party_name_input}**! Lider: {leader.mention}. Gra: **{selected_game}**.")
             voice_ch1_name = f"🔊︱Głos 1 ({party_name_input[:15]})"
             voice_ch1 = await category.create_voice_channel(name=voice_ch1_name)
             voice_ch2_name = f"🔊︱Głos 2 ({party_name_input[:15]})"
@@ -276,8 +214,8 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
         emb = disnake.Embed(title=f"✨ Nowe Party: {party_name_input}", description="Poproś o dołączenie!",
                             color=disnake.Color.green())
         emb.add_field(name="🎮 Gra", value=selected_game, inline=True)
-        emb.add_field(name="👑 Lider", value=author.mention, inline=True)
-        emb.add_field(name="👥 Członkowie", value=author.mention, inline=False)
+        emb.add_field(name="👑 Lider", value=leader.mention, inline=True)
+        emb.add_field(name="👥 Członkowie", value=leader.mention, inline=False)
         emb.set_footer(text="ID Party zostanie przypisane po wysłaniu.")
         pub_join_view = disnake.ui.View(timeout=None)
         pub_join_btn = disnake.ui.Button(label="Poproś o Dołączenie", style=disnake.ButtonStyle.primary,
@@ -316,14 +254,14 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             next_rem_ts = init_exp_ts
 
         active_parties[party_id] = {
-            "emblem_message_id": party_id, "guild_id": guild.id, "leader_id": author.id,
+            "emblem_message_id": party_id, "guild_id": guild.id, "leader_id": leader.id,
             "party_name": party_name_input, "game_name": selected_game,
             "category_id": category.id if category else None,
             "settings_channel_id": settings_ch.id if settings_ch else None, "settings_embed_message_id": None,
             "text_channel_id": text_ch.id if text_ch else None,
             "voice_channel_id": voice_ch1.id if voice_ch1 else None,
             "voice_channel_id_2": voice_ch2.id if voice_ch2 else None,
-            "member_ids": [author.id], "pending_join_requests": [],
+            "member_ids": [leader.id], "pending_join_requests": [],
             "expiry_timestamp": init_exp_ts, "next_reminder_timestamp": next_rem_ts,
             "reminder_sent_for_current_cycle": False, "leader_panel_dm_id": None, "extension_reminder_dm_id": None
         }
@@ -334,7 +272,68 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                              delete_after=config.DM_MESSAGE_DELETE_DELAY)
         except disnake.HTTPException:
             pass
-        await self.send_leader_control_panel(author, party_id)
+        await self.send_leader_control_panel(leader, party_id)
+
+    # NOWA KOMENDA SLASH DO WYSŁANIA WIADOMOŚCI Z PRZYCISKIEM
+    @commands.slash_command(
+        name="setup_party_creation",
+        description="Wysyła wiadomość z przyciskiem do tworzenia party na kanale 'stworz-party'."
+    )
+    @commands.has_permissions(administrator=True)
+    async def setup_party_creation_command(self, inter: disnake.ApplicationCommandInteraction):
+        target_channel_name = config.STWORZ_PARTY_CHANNEL_NAME
+        stworz_party_channel = disnake.utils.get(inter.guild.text_channels, name=target_channel_name)
+
+        if not stworz_party_channel:
+            await inter.response.send_message(
+                f"Nie znaleziono kanału `#{target_channel_name}`. Utwórz go najpierw.",
+                ephemeral=True
+            )
+            return
+
+        embed = disnake.Embed(
+            title="🎉 Stwórz Nowe Party!",
+            description=(
+                "Kliknij poniższy przycisk, aby rozpocząć proces tworzenia party.\n"
+                "Zostaniesz poprowadzony przez kolejne kroki w wiadomościach prywatnych (DM)."
+            ),
+            color=disnake.Color.green()
+        )
+        # embed.set_thumbnail(url=self.bot.user.display_avatar.url) # Można dodać, jeśli potrzeba
+
+        view = disnake.ui.View(timeout=None)
+        view.add_item(disnake.ui.Button(
+            label="Stwórz Party",
+            style=disnake.ButtonStyle.success,
+            custom_id="create_new_party_button_from_setup",
+            emoji="🎉"
+        ))
+
+        try:
+            # Można dodać logikę czyszczenia poprzednich wiadomości bota na tym kanale, jeśli jest taka potrzeba
+            # np. usuwanie starych wiadomości z przyciskiem przed wysłaniem nowej
+            await stworz_party_channel.send(embed=embed, view=view)
+            await inter.response.send_message(
+                f"Wiadomość z przyciskiem do tworzenia party została wysłana na {stworz_party_channel.mention}.",
+                ephemeral=True
+            )
+        except disnake.Forbidden:
+            await inter.response.send_message(
+                f"Nie mam uprawnień do wysłania wiadomości na kanale {stworz_party_channel.mention}.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await inter.response.send_message(f"Wystąpił nieoczekiwany błąd: {e}", ephemeral=True)
+            print(f"Error sending party creation setup message: {e}")
+
+    @setup_party_creation_command.error
+    async def setup_party_creation_command_error(self, inter: disnake.ApplicationCommandInteraction,
+                                                 error: commands.CommandError):
+        if isinstance(error, commands.MissingPermissions):
+            await inter.response.send_message("Nie masz uprawnień do użycia tej komendy.", ephemeral=True)
+        else:
+            await inter.response.send_message(f"Wystąpił błąd podczas wykonywania komendy: {error}", ephemeral=True)
+            print(f"Error in setup_party_creation_command: {error}")
 
     async def _update_settings_embed(self, party_id: int):
         party_data = active_parties.get(party_id)
@@ -446,7 +445,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 value=(f"- `{config.DEFAULT_COMMAND_PREFIX}usun_czlonka ID_lub_@wzmianka`\n"
                        f"- `{config.DEFAULT_COMMAND_PREFIX}zmien_nazwe_party nowa nazwa`\n"
                        f"- `{config.DEFAULT_COMMAND_PREFIX}lista_czlonkow` (odświeża ten panel)\n"
-                       f"- `{config.DEFAULT_COMMAND_PREFIX}opusc ID_party_lub_nazwa_party`\n"  # Poprawiono alias
+                       f"- `{config.DEFAULT_COMMAND_PREFIX}opusc ID_party_lub_nazwa_party`\n"
                        f"*(Przycisk 'Rozwiąż Party' jest poniżej)*"),
                 inline=False
             )
@@ -490,15 +489,15 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             if party_data.get("category_id"):
                 category = guild.get_channel(party_data["category_id"])
                 if category and isinstance(category, disnake.CategoryChannel):
-                    for ch_in_cat in list(category.channels):  # list() to avoid issues during iteration and deletion
+                    for ch_in_cat in list(category.channels):
                         try:
                             await ch_in_cat.delete(reason=reason)
                         except disnake.HTTPException:
-                            pass  # Continue if a sub-channel fails to delete
+                            pass
                     try:
                         await category.delete(reason=reason)
                     except disnake.HTTPException:
-                        pass  # Continue if category fails to delete
+                        pass
             else:
                 channel_keys_to_delete_individually = ["settings_channel_id", "text_channel_id", "voice_channel_id",
                                                        "voice_channel_id_2"]
@@ -525,7 +524,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             print(
                 f"WARN: Gildia {party_data['guild_id']} niedostępna przy rozwiązywaniu party {party_id}. Usuwam tylko dane.")
 
-        save_party_data()  # Save after removal from active_parties
+        save_party_data()
 
         leader = self.bot.get_user(party_data["leader_id"])
         if leader:
@@ -533,33 +532,213 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 await leader.send(
                     f"Twoje party '{party_data.get('party_name', 'N/A')}' zostało rozwiązane. Powód: {reason}")
             except disnake.Forbidden:
-                pass  # Cannot DM leader
+                pass
         print(f"INFO: Party '{party_data.get('party_name', 'N/A')}' (ID: {party_id}) rozwiązane.")
 
-    # Komenda !party została zastąpiona przez przycisk na kanale #stworz-party
+    # ZAKOMENTOWANA KOMENDA !party - ZASTĄPIONA PRZEZ PRZYCISK
     # @commands.command(name="party")
     # async def party_command_handler(self, ctx: commands.Context):
-    #     # Ta komenda jest teraz obsługiwana przez przycisk i _initiate_party_creation_flow
-    #     # Można ją usunąć lub zostawić jako informację
-    #     target_channel = disnake.utils.get(ctx.guild.text_channels, name=config.STWORZ_PARTY_CHANNEL_NAME)
-    #     msg_content = f"Aby stworzyć party, użyj przycisku na kanale {target_channel.mention if target_channel else f'`#{config.STWORZ_PARTY_CHANNEL_NAME}`'}."
+    #     if not ctx.guild:
+    #         await ctx.send("Tej komendy można używać tylko na serwerze.", ephemeral=True)
+    #         return
+
+    #     if ctx.channel.name != config.STWORZ_PARTY_CHANNEL_NAME:
+    #         try:
+    #             await ctx.send(f"Tej komendy można używać tylko na kanale `#{config.STWORZ_PARTY_CHANNEL_NAME}`.",
+    #                            delete_after=10)
+    #             await ctx.message.delete(delay=10)
+    #         except disnake.HTTPException:
+    #             pass
+    #         return
+
+    #     is_already_leader = any(p_data.get("leader_id") == ctx.author.id for p_data in active_parties.values())
+    #     if is_already_leader:
+    #         leader_of_party_name = next((p_data.get("party_name", "...") for p_data in active_parties.values() if
+    #                                      p_data.get("leader_id") == ctx.author.id), "nieznanego party")
+    #         msg = f"{ctx.author.mention}, jesteś już liderem party '{leader_of_party_name}'. Możesz prowadzić tylko jedno party."
+    #         try:
+    #             await ctx.send(msg, delete_after=15)
+    #             await ctx.message.delete()
+    #         except disnake.HTTPException:
+    #             pass
+    #         return
+
     #     try:
-    #         await ctx.send(msg_content, delete_after=15)
-    #         if ctx.message:
-    #             await ctx.message.delete(delay=1) # Krótkie opóźnienie dla pewności
+    #         dm_ch = await ctx.author.create_dm()
+    #     except disnake.Forbidden:
+    #         await ctx.send(f"{ctx.author.mention}, nie mogę Ci wysłać DM. Sprawdź ustawienia prywatności.",
+    #                        delete_after=15)
+    #         try:
+    #             await ctx.message.delete()
+    #         except disnake.HTTPException:
+    #             pass
+    #         return
+
+    #     try:
+    #         await ctx.message.delete()
     #     except disnake.HTTPException:
-    #         pass # Błąd przy wysyłaniu/usuwaniu
+    #         pass
+
+    #     selected_game = await party_creation_flow.handle_game_selection_dm(self.bot, ctx.author, dm_ch)
+    #     if not selected_game: return
+
+    #     party_name_input = await party_creation_flow.handle_party_name_dm(self.bot, ctx.author, dm_ch)
+    #     if not party_name_input: return
+
+    #     leader = ctx.author
+    #     guild = ctx.guild
+
+    #     szukam_ch = disnake.utils.get(guild.text_channels, name=config.SZUKAM_PARTY_CHANNEL_NAME)
+    #     if not szukam_ch:
+    #         await dm_ch.send(
+    #             f"Krytyczny błąd: Kanał `#{config.SZUKAM_PARTY_CHANNEL_NAME}` nie został znaleziony na serwerze '{guild.name}'.")
+    #         return
+
+    #     cat_name = f"🎉 {party_name_input} ({leader.display_name})"
+    #     category_overwrites = {
+    #         guild.default_role: disnake.PermissionOverwrite(
+    #             view_channel=True,
+    #             read_messages=True,
+    #             send_messages=False,
+    #             connect=False,
+    #             speak=False,
+    #             create_public_threads=False,
+    #             create_private_threads=False,
+    #             send_messages_in_threads=False
+    #         ),
+    #         guild.me: disnake.PermissionOverwrite(
+    #             view_channel=True, manage_channels=True, manage_permissions=True,
+    #             read_messages=True, send_messages=True, connect=True, speak=True,
+    #             create_public_threads=True,
+    #             create_private_threads=True,
+    #             send_messages_in_threads=True,
+    #             manage_threads=True
+    #         ),
+    #         leader: disnake.PermissionOverwrite(
+    #             view_channel=True, read_messages=True, send_messages=True,
+    #             connect=True, speak=True, manage_messages=True,
+    #             mute_members=True, deafen_members=True, move_members=True,
+    #             create_public_threads=True,
+    #             create_private_threads=True,
+    #             send_messages_in_threads=True
+    #         )
+    #     }
+    #     category = None; settings_ch = None; text_ch = None; voice_ch1 = None; voice_ch2 = None # Zmienione średniki na None
+    #     try:
+    #         category = await guild.create_category(name=cat_name, overwrites=category_overwrites)
+
+    #         settings_ch_name = f"📌︱info-{party_name_input[:20]}"
+    #         settings_ch_overwrites = {
+    #             guild.default_role: disnake.PermissionOverwrite(send_messages=False, add_reactions=False, create_public_threads=False,
+    #             create_private_threads=False,
+    #             send_messages_in_threads=False),
+    #             guild.me: disnake.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True, )
+    #         }
+    #         settings_ch = await category.create_text_channel(name=settings_ch_name, overwrites=settings_ch_overwrites)
+
+    #         text_ch_name = f"💬︱{party_name_input[:20]}"
+    #         text_ch = await category.create_text_channel(name=text_ch_name)
+    #         await text_ch.send(
+    #             f"Witaj w party **{party_name_input}**! Lider: {leader.mention}. Gra: **{selected_game}**."
+    #         )
+
+    #         voice_ch1_name = f"🔊︱Głos 1 ({party_name_input[:15]})"
+    #         voice_ch1 = await category.create_voice_channel(name=voice_ch1_name)
+
+    #         voice_ch2_name = f"🔊︱Głos 2 ({party_name_input[:15]})"
+    #         voice_ch2 = await category.create_voice_channel(name=voice_ch2_name)
+
+    #     except disnake.HTTPException as e:
+    #         await dm_ch.send(f"Nie udało się stworzyć kanałów: {e}.")
+    #         if category:
+    #             for c_del in list(category.channels):
+    #                 try: await c_del.delete()
+    #                 except disnake.HTTPException: pass
+    #             try: await category.delete()
+    #             except disnake.HTTPException: pass
+    #         return
+
+    #     emb = disnake.Embed(title=f"✨ Nowe Party: {party_name_input}", description="Poproś o dołączenie!",
+    #                         color=disnake.Color.green())
+    #     emb.add_field(name="🎮 Gra", value=selected_game, inline=True)
+    #     emb.add_field(name="👑 Lider", value=leader.mention, inline=True)
+    #     emb.add_field(name="👥 Członkowie", value=leader.mention, inline=False)
+    #     emb.set_footer(text="ID Party zostanie przypisane po wysłaniu.")
+
+    #     pub_join_view = disnake.ui.View(timeout=None)
+    #     pub_join_btn = disnake.ui.Button(label="Poproś o Dołączenie", style=disnake.ButtonStyle.primary,
+    #                                      custom_id=f"request_join_party_TEMP_ID")
+    #     pub_join_view.add_item(pub_join_btn)
+
+    #     emblem_message = None
+    #     try:
+    #         emblem_message = await szukam_ch.send(embed=emb, view=pub_join_view)
+    #     except disnake.HTTPException as e:
+    #         await dm_ch.send(f"Nie udało się opublikować ogłoszenia: {e}")
+    #         if category:
+    #             for c_del in list(category.channels):
+    #                 try: await c_del.delete()
+    #                 except disnake.HTTPException: pass
+    #             try: await category.delete()
+    #             except disnake.HTTPException: pass
+    #         return
+
+    #     party_id = emblem_message.id
+    #     pub_join_btn.custom_id = f"request_join_party_{party_id}"
+    #     emb.set_footer(text=f"ID Party: {party_id}")
+    #     try:
+    #         await emblem_message.edit(embed=emb, view=pub_join_view)
+    #     except disnake.HTTPException as e:
+    #         print(f"WARN: Aktualizacja custom_id przycisku dla '{party_name_input}': {e}")
+
+    #     init_exp_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+    #         hours=config.PARTY_LIFESPAN_HOURS)).timestamp()
+    #     next_rem_ts = init_exp_ts - datetime.timedelta(
+    #         hours=config.EXTENSION_REMINDER_HOURS_BEFORE_EXPIRY).total_seconds()
+    #     if config.PARTY_LIFESPAN_HOURS <= config.EXTENSION_REMINDER_HOURS_BEFORE_EXPIRY:
+    #         next_rem_ts = init_exp_ts
+
+    #     active_parties[party_id] = {
+    #         "emblem_message_id": party_id, "guild_id": guild.id, "leader_id": leader.id,
+    #         "party_name": party_name_input, "game_name": selected_game,
+    #         "category_id": category.id if category else None,
+    #         "settings_channel_id": settings_ch.id if settings_ch else None,
+    #         "settings_embed_message_id": None,
+    #         "text_channel_id": text_ch.id if text_ch else None,
+    #         "voice_channel_id": voice_ch1.id if voice_ch1 else None,
+    #         "voice_channel_id_2": voice_ch2.id if voice_ch2 else None,
+    #         "member_ids": [leader.id], "pending_join_requests": [],
+    #         "expiry_timestamp": init_exp_ts,
+    #         "next_reminder_timestamp": next_rem_ts,
+    #         "reminder_sent_for_current_cycle": False, "leader_panel_dm_id": None,
+    #         "extension_reminder_dm_id": None
+    #     }
+
+    #     if settings_ch:
+    #         await self._update_settings_embed(party_id)
+
+    #     save_party_data()
+
+    #     try:
+    #         await dm_ch.send(f"Party '{party_name_input}' stworzone! Panel zarządzania został wysłany.",
+    #                          delete_after=config.DM_MESSAGE_DELETE_DELAY)
+    #     except disnake.HTTPException:
+    #         pass
+
+    #     await self.send_leader_control_panel(leader, party_id)
 
     @commands.Cog.listener("on_interaction")
     async def on_button_interaction(self, interaction: disnake.MessageInteraction):
         custom_id = interaction.data.get("custom_id")
         if not custom_id: return
 
-        if custom_id == "global_create_new_party_button":  # Nowy przycisk do tworzenia party
-            await interaction.response.defer(ephemeral=True)  # Odpowiedź tymczasowa, widoczna tylko dla użytkownika
-            await self._initiate_party_creation_flow(interaction)  # Przekaż całą interakcję
-            return  # Zakończ obsługę tego custom_id
+        # NOWA OBSŁUGA PRZYCISKU DO TWORZENIA PARTY
+        if custom_id == "create_new_party_button_from_setup":
+            await interaction.response.defer(ephemeral=True)  # Odpowiedź tymczasowa, widoczna tylko dla klikającego
+            await self._start_party_creation_from_interaction(interaction)
+            return
 
+        # Pozostała logika obsługi innych przycisków
         elif custom_id.startswith("request_join_party_") or custom_id.startswith("settings_request_join_"):
             await interaction.response.defer(ephemeral=True)
             try:
@@ -568,7 +747,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 else:
                     party_id_str = custom_id.replace("request_join_party_", "")
                 party_id = int(party_id_str)
-            except (IndexError, ValueError):  # Poprawiono obsługę błędów
+            except (IndexError, ValueError):
                 await interaction.followup.send("Błąd wewnętrzny przycisku (ID party).", ephemeral=True);
                 return
 
@@ -615,15 +794,13 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 await interaction.followup.send("Twoja prośba o dołączenie została wysłana do lidera party.",
                                                 ephemeral=True)
             except disnake.Forbidden:
-                if user_requesting_join.id in party_data.get("pending_join_requests",
-                                                             []):  # Usuń jeśli dodano, a DM lidera zawiodło
+                if user_requesting_join.id in party_data.get("pending_join_requests", []):
                     party_data["pending_join_requests"].remove(user_requesting_join.id)
                     save_party_data()
                 await interaction.followup.send(
                     "Nie udało się wysłać prośby do lidera (prawdopodobnie ma zablokowane DM).", ephemeral=True)
             except Exception as e:
-                if user_requesting_join.id in party_data.get("pending_join_requests",
-                                                             []):  # Podobnie, usuń w razie błędu
+                if user_requesting_join.id in party_data.get("pending_join_requests", []):
                     party_data["pending_join_requests"].remove(user_requesting_join.id)
                     save_party_data()
                 await interaction.followup.send(f"Wystąpił błąd przy wysyłaniu prośby: {e}", ephemeral=True)
@@ -632,7 +809,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
         elif custom_id.startswith("settings_leave_party_"):
             await interaction.response.defer(ephemeral=True)
             try:
-                party_id = int(custom_id.split("_")[3])  # Upewnij się, że indeks jest poprawny
+                party_id = int(custom_id.split("_")[3])
             except (IndexError, ValueError):
                 await interaction.followup.send("Błąd wewnętrzny przycisku.", ephemeral=True);
                 return
@@ -644,8 +821,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 await interaction.followup.send("To party już nie istnieje.", ephemeral=True);
                 return
             if leaver.id == party_data["leader_id"]:
-                await interaction.followup.send("Lider nie może opuścić party w ten sposób. Użyj panelu lidera.",
-                                                ephemeral=True);
+                await interaction.followup.send("Lider nie może opuścić party w ten sposób.", ephemeral=True);
                 return
             if leaver.id not in party_data["member_ids"]:
                 await interaction.followup.send("Nie jesteś członkiem tego party.", ephemeral=True);
@@ -657,13 +833,12 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 return
 
             member_obj = guild.get_member(leaver.id)
-
             channels_to_clear_perms_keys = ["settings_channel_id", "text_channel_id", "voice_channel_id",
                                             "voice_channel_id_2"]
             category_id = party_data.get("category_id")
             category_obj = guild.get_channel(category_id) if category_id else None
 
-            if member_obj:  # Tylko jeśli członek jest na serwerze
+            if member_obj:
                 if category_obj and isinstance(category_obj, disnake.CategoryChannel):
                     try:
                         await category_obj.set_permissions(member_obj, overwrite=None,
@@ -671,48 +846,42 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                     except disnake.HTTPException as e:
                         print(
                             f"BŁĄD przy usuwaniu uprawnień dla {leaver.id} z kategorii {category_id} (party {party_id}): {e}")
-                else:  # Fallback, jeśli nie ma kategorii lub nie jest to kategoria
+                else:
                     for ch_key in channels_to_clear_perms_keys:
                         ch_id = party_data.get(ch_key)
                         if not ch_id: continue
                         channel = guild.get_channel(ch_id)
-                        if channel:  # Upewnij się, że kanał istnieje
+                        if channel:
                             try:
                                 await channel.set_permissions(member_obj, overwrite=None,
                                                               reason="Opuścił party (przycisk z kanału ustawień)")
                             except disnake.HTTPException as e:
                                 print(
                                     f"BŁĄD przy usuwaniu uprawnień dla {leaver.id} z kanału {ch_id} (party {party_id}): {e}")
-
-            if leaver.id in party_data["member_ids"]:
-                party_data["member_ids"].remove(leaver.id)
-
+            if leaver.id in party_data["member_ids"]: party_data["member_ids"].remove(leaver.id)
             save_party_data()
             await self._update_party_emblem(party_id)
-            await self._update_settings_embed(party_id)  # Aktualizuj embed ustawień
-
+            await self._update_settings_embed(party_id)
             await interaction.followup.send(f"Pomyślnie opuściłeś/aś party '{party_data['party_name']}'.",
                                             ephemeral=True)
-
             leader_obj = self.bot.get_user(party_data["leader_id"])
             if not leader_obj:
                 try:
                     leader_obj = await self.bot.fetch_user(party_data["leader_id"])
                 except:
-                    pass  # Nie udało się pobrać lidera
+                    pass
             if leader_obj:
                 try:
                     await leader_obj.send(
                         f"Użytkownik {leaver.mention} (`{leaver.id}`) opuścił Twoje party '{party_data['party_name']}'.")
                 except disnake.Forbidden:
-                    pass  # Nie można wysłać DM
-                if party_id in active_parties:  # Upewnij się, że party nadal istnieje
-                    await self.send_leader_control_panel(leader_obj, party_id)
+                    pass
+                if party_id in active_parties: await self.send_leader_control_panel(leader_obj, party_id)
 
         elif custom_id.startswith("leader_disband_"):
             await interaction.response.defer(ephemeral=True)
             try:
-                party_id = int(custom_id.split("_")[2])  # Upewnij się, że indeks jest poprawny
+                party_id = int(custom_id.split("_")[2])
             except (IndexError, ValueError):
                 await interaction.followup.send("Błąd wewnętrzny przycisku 'Rozwiąż'.", ephemeral=True);
                 return
@@ -724,7 +893,6 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             if interaction.user.id != party_data_check["leader_id"]:
                 await interaction.followup.send("Tylko lider może rozwiązać to party.", ephemeral=True);
                 return
-
             await interaction.followup.send(f"Rozwiązywanie party '{party_data_check['party_name']}'...",
                                             ephemeral=True)
             await self.disband_party(party_id,
@@ -738,21 +906,19 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 await user_message.delete()
             except disnake.HTTPException:
                 pass
-        elif isinstance(ctx_or_interaction, commands.Context):  # Sprawdzenie, czy ctx_or_interaction to Context
+        elif isinstance(ctx_or_interaction, commands.Context):  # Tylko jeśli to kontekst komendy
             try:
                 await ctx_or_interaction.message.delete()
             except disnake.HTTPException:
                 pass
-        # Nie usuwamy wiadomości interakcji, bo to nie jest wiadomość tekstowa od użytkownika
-
         if bot_message:
-            if effective_delay > 0:
-                await asyncio.sleep(effective_delay)
+            if effective_delay > 0: await asyncio.sleep(effective_delay)
             try:
                 await bot_message.delete()
             except disnake.HTTPException:
                 pass
 
+    # ... (reszta komend DM: opusc, usun_czlonka, zmien_nazwe_party, lista_czlonkow - pozostają bez zmian) ...
     @commands.command(name="opusc")
     @commands.dm_only()
     async def leave_party_dm_command(self, ctx: commands.Context, *, party_identifier: str):
@@ -779,7 +945,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                     target_party_data_to_leave = p_info['data'];
                     break
 
-        if not target_party_id_to_leave:  # Zmieniono 'not target_party_id_to_leave' na 'elif not target_party_id_to_leave' i potem na 'if'
+        if not target_party_id_to_leave:
             # Poprawka: p_in_list -> p_info
             found_by_name = [p_info for p_info in parties_member_of_and_not_leader if
                              p_info['name'].lower() == party_identifier.lower().strip()]
@@ -794,8 +960,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 return
 
         if not target_party_id_to_leave or not target_party_data_to_leave:
-            bot_response_msg = await ctx.send(
-                f"Nie znaleziono party '{party_identifier}' lub nie jesteś jego członkiem (i nie liderem).")
+            bot_response_msg = await ctx.send(f"Nie znaleziono party '{party_identifier}'.")
             await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg);
             return
 
@@ -833,7 +998,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             target_party_data_to_leave["member_ids"].remove(leaver.id)
         save_party_data()
         await self._update_party_emblem(target_party_id_to_leave)
-        if target_party_data_to_leave.get("settings_channel_id"):  # Upewnij się, że kanał istnieje
+        if target_party_data_to_leave.get("settings_channel_id"):
             await self._update_settings_embed(target_party_id_to_leave)
 
         bot_response_msg = await ctx.send(f"Pomyślnie opuściłeś/aś party '{target_party_data_to_leave['party_name']}'.")
@@ -851,7 +1016,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                     f"Użytkownik {leaver.mention} (`{leaver.id}`) opuścił Twoje party '{target_party_data_to_leave['party_name']}'.")
             except disnake.Forbidden:
                 pass
-            if target_party_id_to_leave in active_parties:  # Sprawdź czy party nadal istnieje
+            if target_party_id_to_leave in active_parties:
                 await self.send_leader_control_panel(leader_of_left_party, target_party_id_to_leave)
 
         await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
@@ -864,11 +1029,12 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 bot_response_msg = await ctx.send(
                     f"Musisz podać ID lub nazwę party, np. `{config.DEFAULT_COMMAND_PREFIX}opusc MojeParty`.")
         elif isinstance(error, commands.PrivateMessageOnly):
-            pass  # DM only command, no error needed for this
+            pass
         else:
             bot_response_msg = await ctx.send(f"Błąd w !opusc: {type(error).__name__}")
             print(f"BŁĄD w !opusc (DM): {error}")
-        if bot_response_msg: await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
+        if bot_response_msg:
+            await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
 
     @commands.command(name="usun_czlonka")
     @commands.dm_only()
@@ -884,12 +1050,12 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             return
 
         party_id = party_id_led_by_author
-        party_data = active_parties.get(party_id)  # party_data jest już zdefiniowane przez get
+        party_data = active_parties.get(party_id)
 
         target_user_id = None
         if member_identifier.startswith('<@') and member_identifier.endswith('>'):
             try:
-                target_user_id = int(member_identifier.strip('<@!>'))  # ! dla nickname'ów
+                target_user_id = int(member_identifier.strip('<@!>'))
             except ValueError:
                 pass
         elif member_identifier.isdigit():
@@ -899,13 +1065,12 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 pass
 
         if not target_user_id:
-            bot_response_msg = await ctx.send("Niepoprawny format identyfikatora. Podaj @wzmiankę lub ID użytkownika.")
+            bot_response_msg = await ctx.send("Niepoprawny format identyfikatora. Podaj @wzmiankę lub ID.")
             await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg);
             return
 
         if target_user_id == leader.id:
-            bot_response_msg = await ctx.send(
-                "Nie możesz usunąć siebie z party tą komendą. Użyj przycisku 'Rozwiąż Party' w panelu, jeśli chcesz rozwiązać party.")
+            bot_response_msg = await ctx.send("Nie możesz usunąć siebie. Użyj przycisku w panelu.")
             await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg);
             return
 
@@ -920,12 +1085,12 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg);
             return
 
-        member_to_remove_obj = guild.get_member(target_user_id)  # Może być None, jeśli użytkownik opuścił serwer
+        member_to_remove_obj = guild.get_member(target_user_id)
         removed_user_mention_or_id = f"ID `{target_user_id}`"
         if member_to_remove_obj:
             removed_user_mention_or_id = f"{member_to_remove_obj.mention} (`{target_user_id}`)"
 
-        if member_to_remove_obj:  # Usuń uprawnienia tylko jeśli członek jest na serwerze
+        if member_to_remove_obj:
             category_id = party_data.get("category_id")
             category_obj = guild.get_channel(category_id) if category_id else None
             if category_obj and isinstance(category_obj, disnake.CategoryChannel):
@@ -948,24 +1113,24 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                             except disnake.HTTPException:
                                 pass
 
-        if target_user_id in party_data.get("member_ids", []):  # Upewnij się, że nadal jest na liście
+        if target_user_id in party_data.get("member_ids", []):
             party_data["member_ids"].remove(target_user_id)
 
         save_party_data()
         await self._update_party_emblem(party_id)
-        if party_data.get("settings_channel_id"):  # Upewnij się, że kanał istnieje
+        if party_data.get("settings_channel_id"):
             await self._update_settings_embed(party_id)
 
-        await self.send_leader_control_panel(leader, party_id)  # Odśwież panel lidera
+        await self.send_leader_control_panel(leader, party_id)
         bot_response_msg = await ctx.send(
             f"{removed_user_mention_or_id} został usunięty z party '{party_data['party_name']}'.")
 
-        if member_to_remove_obj:  # Wyślij DM, jeśli to możliwe
+        if member_to_remove_obj:
             try:
                 await member_to_remove_obj.send(
                     f"Zostałeś/aś usunięty/a z party '{party_data['party_name']}' przez lidera.")
             except disnake.Forbidden:
-                pass  # Nie można wysłać DM
+                pass
 
         await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
 
@@ -975,13 +1140,14 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
         if isinstance(error, commands.MissingRequiredArgument):
             if error.param.name == 'member_identifier':
                 bot_response_msg = await ctx.send(
-                    f"Musisz podać @wzmiankę lub ID użytkownika do usunięcia, np. `{config.DEFAULT_COMMAND_PREFIX}usun_czlonka @uzytkownik`.")
+                    f"Musisz podać @wzmiankę lub ID, np. `{config.DEFAULT_COMMAND_PREFIX}usun_czlonka @uzytkownik`.")
         elif isinstance(error, commands.PrivateMessageOnly):
             pass
         else:
             bot_response_msg = await ctx.send(f"Błąd w !usun_czlonka: {type(error).__name__}")
             print(f"BŁĄD w !usun_czlonka: {error}")
-        if bot_response_msg: await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
+        if bot_response_msg:
+            await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
 
     @commands.command(name="zmien_nazwe_party")
     @commands.dm_only()
@@ -1004,14 +1170,13 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             bot_response_msg = await ctx.send("Nowa nazwa party nie może być pusta.")
             await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg);
             return
-        if not (0 < len(
-                new_name_stripped) <= config.MAX_PARTY_NAME_LENGTH):  # Zakładając, że config.MAX_PARTY_NAME_LENGTH istnieje
+        if not (0 < len(new_name_stripped) <= config.MAX_PARTY_NAME_LENGTH):
             bot_response_msg = await ctx.send(f"Nazwa musi mieć od 1 do {config.MAX_PARTY_NAME_LENGTH} znaków.")
             await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg,
                                             delay=config.DM_MESSAGE_DELETE_DELAY * 1.5);
             return
         if new_name_stripped == party_data["party_name"]:
-            bot_response_msg = await ctx.send(f"Nowa nazwa jest taka sama jak obecna. Nie dokonano zmian.")
+            bot_response_msg = await ctx.send(f"Nowa nazwa jest taka sama. Nie dokonano zmian.")
             await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg);
             return
 
@@ -1019,10 +1184,11 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
         party_data["party_name"] = new_name_stripped
 
         guild = self.bot.get_guild(party_data["guild_id"])
-        leader_display_name_for_cat = leader.display_name  # Domyślnie
+        leader_display_name_for_cat = leader.display_name
         if guild:
             leader_member_obj = guild.get_member(leader.id)
-            if leader_member_obj: leader_display_name_for_cat = leader_member_obj.display_name
+            if leader_member_obj:
+                leader_display_name_for_cat = leader_member_obj.display_name
 
             category = guild.get_channel(party_data["category_id"]) if party_data.get("category_id") else None
             if category and isinstance(category, disnake.CategoryChannel):
@@ -1051,11 +1217,11 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
 
         save_party_data()
         await self._update_party_emblem(party_id)
-        if party_data.get("settings_channel_id"):  # Upewnij się, że kanał istnieje
+        if party_data.get("settings_channel_id"):
             await self._update_settings_embed(party_id)
 
-        await self.send_leader_control_panel(leader, party_id)  # Odśwież panel
-        bot_response_msg = await ctx.send(f"Nazwa party została zmieniona z '{old_name}' na '{new_name_stripped}'.")
+        await self.send_leader_control_panel(leader, party_id)
+        bot_response_msg = await ctx.send(f"Nazwa party zmieniona z '{old_name}' na '{new_name_stripped}'.")
         await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
 
     @rename_party_dm_command.error
@@ -1064,13 +1230,12 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
         if isinstance(error, commands.MissingRequiredArgument):
             if error.param.name == 'new_name':
                 bot_response_msg = await ctx.send(
-                    f"Musisz podać nową nazwę dla party, np. `{config.DEFAULT_COMMAND_PREFIX}zmien_nazwe_party Moje Nowe Party`.")
-        elif isinstance(error, commands.PrivateMessageOnly):
-            pass
+                    f"Podaj nową nazwę, np. `{config.DEFAULT_COMMAND_PREFIX}zmien_nazwe_party Moje Party`.")
         else:
             bot_response_msg = await ctx.send(f"Błąd w !zmien_nazwe_party: {type(error).__name__}")
             print(f"BŁĄD w !zmien_nazwe_party: {error}")
-        if bot_response_msg: await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
+        if bot_response_msg:
+            await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
 
     @commands.command(name="lista_czlonkow", aliases=["panel", "refreshpanel"])
     @commands.dm_only()
@@ -1085,32 +1250,30 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
             await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg);
             return
 
-        party_id = party_id_led_by_author  # party_id jest już zdefiniowane
-        await self.send_leader_control_panel(leader, party_id)  # Wyślij/odśwież panel
-        bot_response_msg = await ctx.send("Panel zarządzania został odświeżony/wysłany.")  # Wiadomość potwierdzająca
+        party_id = party_id_led_by_author
+        await self.send_leader_control_panel(leader, party_id)
+        bot_response_msg = await ctx.send("Panel zarządzania odświeżony.")
         await self._cleanup_dm_messages(ctx, bot_message=bot_response_msg)
 
-    @tasks.loop(
-        minutes=config.EXTENSION_CHECK_LOOP_MINUTES)  # Zakładając, że config.EXTENSION_CHECK_LOOP_MINUTES istnieje
+    @tasks.loop(minutes=config.EXTENSION_CHECK_LOOP_MINUTES)
     async def extension_check_loop(self):
         now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        p_ids_iter = list(active_parties.keys())  # Kopiuj klucze, aby uniknąć problemów z modyfikacją podczas iteracji
+        p_ids_iter = list(active_parties.keys())
 
         for p_id in p_ids_iter:
-            p_data = active_parties.get(p_id)  # Użyj .get() dla bezpieczeństwa
-            if not p_data: continue  # Party mogło zostać usunięte w międzyczasie
+            p_data = active_parties.get(p_id)
+            if not p_data: continue
 
             if now_ts >= p_data["expiry_timestamp"]:
                 await self.disband_party(p_id,
                                          reason=f"Party automatycznie wygasło <t:{int(p_data['expiry_timestamp'])}:F>.")
-                continue  # Przejdź do następnego party
+                continue
 
             should_send_reminder = (
                     not p_data.get("reminder_sent_for_current_cycle", False) and
                     p_id not in parties_awaiting_extension_reply and
-                    now_ts >= p_data.get("next_reminder_timestamp",
-                                         float('inf')) and  # float('inf') jeśli klucz nie istnieje
-                    p_data["expiry_timestamp"] > now_ts  # Upewnij się, że party jeszcze nie wygasło
+                    now_ts >= p_data.get("next_reminder_timestamp", float('inf')) and
+                    p_data["expiry_timestamp"] > now_ts
             )
 
             if should_send_reminder:
@@ -1119,18 +1282,16 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                     try:
                         ldr = await self.bot.fetch_user(p_data["leader_id"])
                     except (disnake.NotFound, disnake.HTTPException):
-                        print(f"WARN LOOP: Lider party {p_id} nieosiągalny. Party wygaśnie normalnie.");
+                        print(f"WARN LOOP: Lider party {p_id} nieosiągalny. Party wygaśnie normalnie.")
                         continue
-
                 try:
                     reply_due_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-                        hours=config.EXTENSION_WINDOW_HOURS)  # Zakładając config.EXTENSION_WINDOW_HOURS
+                        hours=config.EXTENSION_WINDOW_HOURS)
                     reply_due_ts = reply_due_dt.timestamp()
                     dm_ch = await ldr.create_dm()
                     reminder_msg_content = (
                         f"🔔 Przypomnienie!\nTwoje party **'{p_data['party_name']}'** wygasa <t:{int(p_data['expiry_timestamp'])}:R>.\n"
                         f"Przedłużyć o **{config.PARTY_EXTEND_BY_HOURS}**h? Odpisz `Tak`/`Nie` do <t:{int(reply_due_ts)}:R>."
-                    # Zakładając config.PARTY_EXTEND_BY_HOURS
                     )
                     reminder_dm_msg = await dm_ch.send(reminder_msg_content)
                     parties_awaiting_extension_reply[p_id] = {
@@ -1139,7 +1300,7 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                         'reminder_message_id': reminder_dm_msg.id
                     }
                     p_data["reminder_sent_for_current_cycle"] = True
-                    p_data["extension_reminder_dm_id"] = reminder_dm_msg.id  # Zapisz ID wiadomości przypomnienia
+                    p_data["extension_reminder_dm_id"] = reminder_dm_msg.id
                     save_party_data()
                     print(f"INFO LOOP: Wysłano przypomnienie o przedłużeniu do lidera party {p_id}.")
                 except disnake.Forbidden:
@@ -1147,34 +1308,31 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 except Exception as e:
                     print(f"BŁĄD LOOP podczas wysyłania przypomnienia dla party {p_id}: {e}")
 
-            # Sprawdź, czy minął czas na odpowiedź
             if p_id in parties_awaiting_extension_reply and now_ts >= parties_awaiting_extension_reply[p_id][
                 'reply_due_ts']:
-                ldr = self.bot.get_user(p_data["leader_id"])  # Pobierz lidera ponownie
+                ldr = self.bot.get_user(p_data["leader_id"])
                 if not ldr:
                     try:
                         ldr = await self.bot.fetch_user(p_data["leader_id"])
                     except:
-                        pass  # Nie udało się pobrać
+                        pass
 
                 reminder_info = parties_awaiting_extension_reply[p_id]
-                # Spróbuj usunąć wiadomość z przypomnieniem
                 if reminder_info.get('leader_dm_channel_id') and reminder_info.get('reminder_message_id'):
                     try:
-                        dm_ch_for_cleanup = self.bot.get_channel(
-                            reminder_info['leader_dm_channel_id']) or await self.bot.fetch_channel(
-                            reminder_info['leader_dm_channel_id'])
+                        dm_ch_for_cleanup = self.bot.get_channel(reminder_info['leader_dm_channel_id'])
+                        if not dm_ch_for_cleanup:
+                            dm_ch_for_cleanup = await self.bot.fetch_channel(reminder_info['leader_dm_channel_id'])
                         if isinstance(dm_ch_for_cleanup, disnake.DMChannel):
                             msg_to_delete = await dm_ch_for_cleanup.fetch_message(reminder_info['reminder_message_id'])
                             await msg_to_delete.delete()
                     except (disnake.NotFound, disnake.Forbidden, disnake.HTTPException):
-                        pass  # Błąd przy usuwaniu starego przypomnienia
-
-                del parties_awaiting_extension_reply[p_id]  # Usuń z oczekujących
+                        pass
+                del parties_awaiting_extension_reply[p_id]
                 if ldr:
                     try:
                         await ldr.send(
-                            f"Nie otrzymano odpowiedzi ws. przedłużenia party '{p_data['party_name']}'. Wygasnie ono zgodnie z planem <t:{int(p_data['expiry_timestamp'])}:R>.",
+                            f"Nie otrzymano odpowiedzi ws. przedłużenia party '{p_data['party_name']}'. Wygasnie <t:{int(p_data['expiry_timestamp'])}:R>.",
                             delete_after=config.DM_MESSAGE_DELETE_DELAY * 2
                         )
                     except disnake.Forbidden:
@@ -1188,113 +1346,102 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
 
     @commands.Cog.listener("on_message")
     async def on_extension_reply(self, message: disnake.Message):
-        if message.author.bot or message.guild is not None: return  # Tylko DM od użytkowników
+        if message.author.bot or message.guild is not None: return
 
         author_id = message.author.id
         party_id_being_processed = None
         extension_data_for_party = None
 
-        # Sprawdź, czy ta wiadomość jest odpowiedzią na oczekujące zapytanie o przedłużenie
-        for pid, ext_data in list(parties_awaiting_extension_reply.items()):  # list() dla bezpiecznej modyfikacji
+        for pid, ext_data in list(parties_awaiting_extension_reply.items()):
             p_data_check = active_parties.get(pid)
             if p_data_check and \
                     p_data_check.get("leader_id") == author_id and \
                     ext_data.get('leader_dm_channel_id') == message.channel.id:
-                # Sprawdź, czy odpowiedź jest na czas
                 if datetime.datetime.now(datetime.timezone.utc).timestamp() < ext_data['reply_due_ts']:
                     party_id_being_processed = pid
                     extension_data_for_party = ext_data
-                    break  # Znaleziono pasujące party i dane
-                else:  # Odpowiedź spóźniona
-                    # Usuń oryginalne przypomnienie, jeśli istnieje
+                    break
+                else:
                     if ext_data.get('reminder_message_id'):
                         try:
                             msg_to_del = await message.channel.fetch_message(ext_data['reminder_message_id'])
                             await msg_to_del.delete()
                         except:
-                            pass  # Nie udało się usunąć
+                            pass
                     try:
-                        await message.delete()  # Usuń spóźnioną odpowiedź użytkownika
+                        await message.delete()
                     except:
                         pass
                     try:
                         await message.channel.send(
-                            f"Twoja odpowiedź ('{message.content}') dotycząca przedłużenia party '{p_data_check.get('party_name', 'N/A')}' nadeszła zbyt późno.",
+                            f"Odpowiedź ('{message.content}') dla party '{p_data_check.get('party_name', 'N/A')}' przyszła po czasie.",
                             delete_after=config.DM_MESSAGE_DELETE_DELAY * 2)
                     except:
-                        pass  # Nie udało się wysłać wiadomości o spóźnieniu
-                    del parties_awaiting_extension_reply[pid]  # Usuń z oczekujących
-                    return  # Zakończ przetwarzanie dla tej wiadomości
+                        pass
+                    del parties_awaiting_extension_reply[pid]
+                    return
 
-        if not party_id_being_processed or not extension_data_for_party:
-            return  # Wiadomość nie jest odpowiedzią na przedłużenie lub nie znaleziono danych
+        if not party_id_being_processed or not extension_data_for_party: return
 
-        p_data = active_parties.get(party_id_being_processed)  # Pobierz dane party
-        if not p_data:  # Jeśli party zostało usunięte w międzyczasie
+        p_data = active_parties.get(party_id_being_processed)
+        if not p_data:
             if party_id_being_processed in parties_awaiting_extension_reply:
                 del parties_awaiting_extension_reply[party_id_being_processed]
             return
 
         reply_content = message.content.strip().lower()
-        bot_response_after_reply_msg = None  # Wiadomość od bota po odpowiedzi
-        user_reply_msg = message  # Wiadomość od użytkownika
+        bot_response_after_reply_msg = None
+        user_reply_msg = message
 
-        # Usuń oryginalną wiadomość z przypomnieniem od bota
         if extension_data_for_party.get('reminder_message_id'):
             try:
                 original_reminder_msg = await message.channel.fetch_message(
                     extension_data_for_party['reminder_message_id'])
                 await original_reminder_msg.delete()
             except:
-                pass  # Nie udało się usunąć
+                pass
 
         if reply_content == "tak":
             new_expiry_ts = p_data["expiry_timestamp"] + datetime.timedelta(
                 hours=config.PARTY_EXTEND_BY_HOURS).total_seconds()
             p_data["expiry_timestamp"] = new_expiry_ts
-            # Oblicz nowy czas następnego przypomnienia
             next_rem_ts_after_extend = new_expiry_ts - datetime.timedelta(
                 hours=config.EXTENSION_REMINDER_HOURS_BEFORE_EXPIRY).total_seconds()
-            if config.PARTY_LIFESPAN_HOURS <= config.EXTENSION_REMINDER_HOURS_BEFORE_EXPIRY:  # Jeśli cykl jest krótki
-                next_rem_ts_after_extend = new_expiry_ts  # Przypomnienie tuż przed wygaśnięciem
+            if config.PARTY_LIFESPAN_HOURS <= config.EXTENSION_REMINDER_HOURS_BEFORE_EXPIRY:
+                next_rem_ts_after_extend = new_expiry_ts
             p_data["next_reminder_timestamp"] = next_rem_ts_after_extend
-            p_data["reminder_sent_for_current_cycle"] = False  # Zresetuj flagę przypomnienia
-            p_data["extension_reminder_dm_id"] = None  # Usuń ID starego przypomnienia
-            del parties_awaiting_extension_reply[party_id_being_processed]  # Usuń z oczekujących
+            p_data["reminder_sent_for_current_cycle"] = False
+            p_data["extension_reminder_dm_id"] = None
+            del parties_awaiting_extension_reply[party_id_being_processed]
             save_party_data()
             bot_response_after_reply_msg = await message.channel.send(
-                f"Party **'{p_data['party_name']}'** zostało przedłużone! Nowy czas wygaśnięcia: <t:{int(new_expiry_ts)}:F>.")
-            await self.send_leader_control_panel(message.author, party_id_being_processed)  # Odśwież panel
+                f"Party **'{p_data['party_name']}'** przedłużone! Nowy czas wygaśnięcia: <t:{int(new_expiry_ts)}:F>.")
+            await self.send_leader_control_panel(message.author, party_id_being_processed)
             print(f"INFO REPLY: Party {party_id_being_processed} przedłużone przez lidera.")
         elif reply_content == "nie":
-            p_data["extension_reminder_dm_id"] = None  # Usuń ID starego przypomnienia
-            del parties_awaiting_extension_reply[party_id_being_processed]  # Usuń z oczekujących
-            save_party_data()  # Zapisz zmiany (głównie usunięcie extension_reminder_dm_id)
+            p_data["extension_reminder_dm_id"] = None
+            del parties_awaiting_extension_reply[party_id_being_processed]
+            save_party_data()
             bot_response_after_reply_msg = await message.channel.send(
-                f"Party **'{p_data['party_name']}'** nie zostało przedłużone. Wygasnie ono zgodnie z planem <t:{int(p_data['expiry_timestamp'])}:R>.")
+                f"Nie przedłużono party **'{p_data['party_name']}'**. Wygasnie <t:{int(p_data['expiry_timestamp'])}:R>.")
             print(f"INFO REPLY: Lider nie przedłużył party {party_id_being_processed}.")
-        else:  # Niepoprawna odpowiedź
-            current_reply_due_ts = extension_data_for_party['reply_due_ts']  # Pobierz czas na odpowiedź
+        else:
+            current_reply_due_ts = extension_data_for_party['reply_due_ts']
             new_reminder_content = (
                 f"⚠️ Nieprawidłowa odpowiedź: '{message.content}'.\n"
-                f"Twoje party **'{p_data['party_name']}'** wygasa <t:{int(p_data['expiry_timestamp'])}:R>.\n"
-                f"Czy chcesz je przedłużyć o **{config.PARTY_EXTEND_BY_HOURS}**h? Odpisz `Tak` lub `Nie` do <t:{int(current_reply_due_ts)}:R>."
+                f"Party **'{p_data['party_name']}'** wygasa <t:{int(p_data['expiry_timestamp'])}:R>.\n"
+                f"Przedłużyć o **{config.PARTY_EXTEND_BY_HOURS}**h? Odpisz `Tak`/`Nie` do <t:{int(current_reply_due_ts)}:R>."
             )
             try:
                 new_reminder_msg = await message.channel.send(new_reminder_content)
-                # Zaktualizuj ID wiadomości przypomnienia w słowniku oczekujących i w danych party
                 parties_awaiting_extension_reply[party_id_being_processed]['reminder_message_id'] = new_reminder_msg.id
                 p_data["extension_reminder_dm_id"] = new_reminder_msg.id
-                save_party_data()  # Zapisz nowe ID wiadomości
-                bot_response_after_reply_msg = None  # Nie ma wiadomości od bota do usunięcia po tym (bo to jest nowe przypomnienie)
+                save_party_data()
+                bot_response_after_reply_msg = None
             except disnake.HTTPException as e:
                 print(
                     f"BŁĄD REPLY: Nie udało się wysłać ponownego przypomnienia dla party {party_id_being_processed}: {e}")
-            # Nie usuwamy wiadomości użytkownika, jeśli odpowiedź była niepoprawna,
-            # chyba że chcemy ją usunąe zawsze - wtedy user_reply_msg powinno być message
             user_reply_msg = message  # Ustawiamy do usunięcia także niepoprawną odpowiedź użytkownika
-
-        # Sprzątanie wiadomości DM (odpowiedzi użytkownika i odpowiedzi bota, jeśli istnieje)
         await self._cleanup_dm_messages(None, bot_message=bot_response_after_reply_msg, user_message=user_reply_msg)
 
 
