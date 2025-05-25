@@ -758,16 +758,16 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                 return
 
             try:
-                await interaction.response.defer()  # Od razu potwierdź interakcję
-            except disnake.HTTPException:  # Np. InteractionResponded, NotFound
+                await interaction.response.defer()
+            except disnake.HTTPException:
                 print(
                     f"OSTRZEŻENIE: Nie udało się wykonać defer() dla interakcji przycisku 'trigger_party_command' od {interaction.user.name}")
-                pass  # Kontynuuj mimo to, może jeszcze zadziałać
+                pass
 
             party_cmd = self.bot.get_command("party")
             if not party_cmd:
                 print("BŁĄD KRYTYCZNY: Komenda 'party' nie została znaleziona w bocie.")
-                try:  # Spróbuj wysłać followup nawet jeśli defer się nie udało w pełni
+                try:
                     await interaction.followup.send(
                         "Wystąpił wewnętrzny błąd bota (nie znaleziono komendy party). Skontaktuj się z administratorem.",
                         ephemeral=True)
@@ -775,51 +775,50 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                     pass
                 return
 
-            # Przygotuj "fałszywą" wiadomość dla kontekstu
-            # Użyj ID interakcji dla wiadomości, aby było unikalne
-            # Użyj danych z interakcji do wypełnienia autora, kanału, gildii
+            # --- POPRAWKA TUTAJ ---
+            author_data = {
+                'id': str(interaction.user.id),
+                'username': interaction.user.name,
+                'discriminator': interaction.user.discriminator,
+                'avatar': interaction.user.avatar.key if interaction.user.avatar else None,
+                'bot': interaction.user.bot
+            }
+            # Jeśli użytkownik ma global_name (nowy system nazw Discorda), można go dodać
+            if hasattr(interaction.user, 'global_name'):
+                author_data['global_name'] = interaction.user.global_name
+
             fake_message_data = {
-                'id': interaction.id,
+                'id': interaction.id,  # Użyj ID interakcji jako ID "wiadomości"
                 'channel_id': interaction.channel_id,
                 'guild_id': interaction.guild_id,
-                'author': interaction.user._to_minimal_user_json(),  # type: ignore
-                'content': f"{config.DEFAULT_COMMAND_PREFIX}party",  # Symulujemy treść komendy
+                'author': author_data,  # Użyj poprawionego słownika author_data
+                'content': f"{config.DEFAULT_COMMAND_PREFIX}party",
                 'attachments': [], 'embeds': [], 'edited_timestamp': None, 'type': 0,
                 'pinned': False, 'mention_everyone': False, 'tts': False,
                 'mentions': [], 'mention_roles': [], 'mention_channels': [],
                 'components': [], 'flags': 0,
-                # Dodajemy specjalny atrybut, aby party_command_handler mógł go wykryć (opcjonalnie)
-                # '_is_fake_for_interaction': True # To wymagałoby modyfikacji disnake.Message lub użycia setattr
             }
-            # state i channel są wymagane przez konstruktor disnake.Message
-            # interaction._state to wewnętrzne pole, ale najłatwiej dostępne
+            # --- KONIEC POPRAWKI ---
+
             fake_message = disnake.Message(state=interaction._state, channel=interaction.channel,
                                            data=fake_message_data)  # type: ignore
-            setattr(fake_message, '_is_fake_for_interaction', True)  # Dodajemy atrybut dynamicznie
+            setattr(fake_message, '_is_fake_for_interaction', True)
 
-            # Monkeypatch delete metody dla tej konkretnej instancji wiadomości
-            original_delete = fake_message.delete  # Zapisz na wszelki wypadek, choć nie będzie używana
+            original_delete = fake_message.delete
 
             async def _dummy_delete_for_interaction(*args, **kwargs):
-                # print(f"DEBUG: _dummy_delete_for_interaction wywołane dla wiadomości symulowanej przez interakcję {interaction.id}")
-                pass  # Nic nie rób - nie chcemy usuwać wiadomości z przyciskiem
+                pass
 
             fake_message.delete = _dummy_delete_for_interaction  # type: ignore
 
-            # Stwórz kontekst
-            # `cls=commands.Context` jest ważne, jeśli masz własną klasę Contextu
             ctx = await self.bot.get_context(fake_message, cls=commands.Context)  # type: ignore
 
-            # Upewnij się, że kluczowe atrybuty kontekstu są poprawne
             ctx.author = interaction.user  # type: ignore
             ctx.guild = interaction.guild
             ctx.channel = interaction.channel  # type: ignore
-            # ctx.message jest już naszym fake_message
-            ctx.command = party_cmd  # Przypisz komendę do kontekstu
+            ctx.command = party_cmd
 
             try:
-                # Wywołaj komendę. party_command_handler spróbuje użyć ctx.message.delete(),
-                # ale trafi na naszą "zaślepkę" _dummy_delete_for_interaction.
                 await party_cmd.invoke(ctx)  # type: ignore
             except Exception as e:
                 print(f"BŁĄD podczas wywoływania party_command_handler z interakcji (ID: {interaction.id}): {e}")
@@ -830,14 +829,9 @@ class PartyManagementCog(commands.Cog, name="Zarządzanie Party"):
                         f"Wystąpił nieoczekiwany błąd podczas próby stworzenia party: {e}. Spróbuj ponownie później.",
                         ephemeral=True)
                 except disnake.HTTPException:
-                    pass  # Jeśli nie można wysłać followup
-            finally:
-                # Przywrócenie oryginalnej metody delete nie jest konieczne, bo fake_message jest tymczasowe
-                # ale dla czystości można by: fake_message.delete = original_delete
-                pass
-            return  # Zakończ obsługę tego custom_id
+                    pass
+            return
 
-        # --- Pozostałe twoje listenery na przyciski ---
         elif custom_id.startswith("request_join_party_") or custom_id.startswith("settings_request_join_"):
             await interaction.response.defer(ephemeral=True)
             try:
